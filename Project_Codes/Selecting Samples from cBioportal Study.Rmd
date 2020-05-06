@@ -1,0 +1,175 @@
+---
+title: "Selecting TNBC samples from cBioportal Study"
+output: html_notebook
+---
+
+
+
+```{r}
+#setting directory to file folder and reading input
+#install.packages("ggpubr", dependencies = TRUE)
+library("ggpubr")
+library("readr")
+library("tidyverse")
+library("openxlsx")
+
+
+
+
+setwd(dirname(rstudioapi::getSourceEditorContext()$path))
+setwd("./..")
+Firehose_TCGA <- read_tsv("./Project_Datasets/Firehose Legacy TCGA - mRNA expression (RNA Seq V2 RSEM) for ERBB2 ESR1.txt")
+
+##________________________________________________
+#only retains sample IDs while are in the bottom 25% for ERBB2 and ESRC1
+TNBC_Sample_ids <- Firehose_TCGA$SAMPLE_ID[Firehose_TCGA$ERBB2< quantile(Firehose_TCGA$ERBB2, na.rm=T)[[2]] & Firehose_TCGA$ESR1< quantile(Firehose_TCGA$ESR1,na.rm=T)[[2]]] 
+write(na.omit(TNBC_Sample_ids), "./Project_Output/TNBC_Sample_ids_Firehose_TNBC.txt")
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+```{r}
+###SPRINT Prediction
+Gene_names <- read_tsv("./../Project_Datasets/HUMAN_9606_idmapping.dat",
+                       col_names = FALSE)
+SPRINT_PPI_predictions <- list.files("./../Project_Datasets/top_2million_predicted_PPIs")
+
+#All datasets from the SPRINT: Scoring PRotein INTeractions top 1% predictions
+Predictions <- data.frame(V1=character(),V2=character(),V3=numeric())
+                 
+for (i in SPRINT_PPI_predictions) {
+    j <- read.csv(paste("./../Project_Datasets/top_2million_predicted_PPIs/",i,sep = ""), header =  FALSE,
+                  sep = " ", stringsAsFactors = FALSE)
+    Predictions = rbind.data.frame(j, Predictions)
+}
+
+LOXL2 <- "Q9Y4K0"
+
+Predictions_LOXL2 <- Predictions[Predictions$V1 == LOXL2 | Predictions$V2 == LOXL2,]
+LOXL2_partners <- data.frame(table(c(Predictions_LOXL2$V1,Predictions_LOXL2$V2)))
+LOXL2_partners <- left_join(LOXL2_partners,Gene_names[Gene_names$X2 == 'Gene_Name',-2], by = c("Var1" = "X1"))
+write.xlsx(LOXL2_partners[order(LOXL2_partners$Freq, decreasing = TRUE),],"./../Project_Output/LOXL2_prediction_partners.xlsx")
+#BRD4 O60885 isn't in there
+```
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r}
+### CPTAC Metastasis
+#https://cptac-data-portal.georgetown.edu/study-summary/S039
+
+S039_BRCA_propective_clinical_data <- read.xlsx("./../Project_Datasets/S039_BRCA_propective_clinical_data_r1.xlsx") %>% 
+    .[,c("Participant_ID","Estrogen_Receptor_Status_by_IHC","Progesterone_Receptor_Status_by_IHC","HER2_ERBB2_Status_by_IHC")] %>% na.omit()
+
+S039_BRCA_propective_clinical_data$IHC <- if_else(rowSums(S039_BRCA_propective_clinical_data[2:4] == "Positive") == 3, "TP", if_else(rowSums(S039_BRCA_propective_clinical_data[2:4] == "Negative") == 3, "TN", "Other"))
+
+CPTAC_S039 <- read_tsv("./../Project_Datasets/CPTAC2_Breast_Prospective_Collection_BI_Proteome.tmt10.tsv")
+sample_ids <- read.xlsx("./../Project_Datasets/S039_Breast_Cancer_Prospective_Collection_Specimens.xlsx")[,c(1:4)]
+sample_ids <- left_join(sample_ids, S039_BRCA_propective_clinical_data[,c("Participant_ID","IHC")], by = c(`Participant.Protocol.Identifier.:.Collection.Protocol.Registration` = "Participant_ID")) %>% na.omit()
+
+
+col_names <- colnames(CPTAC_S039)
+col_names <- str_replace_all(col_names, paste(sample_ids$Specimen.Label[sample_ids$Sample.Type == "Adjacent_Normal"],collapse = "|"),"	Adjacent_Normal")
+col_names <- str_replace_all(col_names, paste(sample_ids$Specimen.Label[sample_ids$IHC == "TP"],collapse = "|"),"TP")
+col_names <- str_replace_all(col_names, paste(sample_ids$Specimen.Label[sample_ids$IHC == "TN"],collapse = "|"),"TN")
+colnames(CPTAC_S039) <- col_names
+
+CPTAC_S039 <- CPTAC_S039[,which(str_detect(colnames(CPTAC_S039), "Gene|TN|TP|Normal"))  %>% .[-length(.)]]
+
+Genes_of_interest <- c("BRD4" , "EPCAM" ,"ERBB2" ,"ESR1" , "LOXL2" ,"VIM" )
+
+CPTAC_S039_healthy <- CPTAC_S039[CPTAC_S039$Gene %in% Genes_of_interest, 
+                                 which(str_detect(colnames(CPTAC_S039), "Gene|Adjacent_Normal Log Ratio")) ]
+CPTAC_S039_TP <- CPTAC_S039[CPTAC_S039$Gene %in% Genes_of_interest, 
+                                which(str_detect(colnames(CPTAC_S039), "Gene|TP Log Ratio")) ]
+CPTAC_S039_TN <- CPTAC_S039[CPTAC_S039$Gene %in% Genes_of_interest, 
+                                which(str_detect(colnames(CPTAC_S039), "Gene|TN Log Ratio")) ]
+
+blue <- rgb(173,216,230,max = 255, alpha = 80, names = "lt.blue")
+pink <- rgb(255,192,203, max = 255, alpha = 80, names = "lt.pink")
+green <- rgb(0,100,0, max = 255, alpha = 80, names = "dark.green")
+
+xlim_bounds <- c(min(na.omit(CPTAC_S039[,-1])),max(na.omit(CPTAC_S039[,-1])))
+ylim_bounds <- c(0, ncol(CPTAC_S039_healthy))
+
+#quartile_ERBB2 <- as.numeric(CPTAC_S039_tumour[CPTAC_S039_tumour$Gene == "ERBB2",2:(ncol(CPTAC_S039_tumour)-1)]) %>% 
+#    quantile(prob = seq(0, 1, length = 11))
+#quartile_ESR1 <- as.numeric(CPTAC_S039_tumour[CPTAC_S039_tumour$Gene == "ESR1",2:(ncol(CPTAC_S039_tumour)-1)]) %>% 
+#    quantile(prob = seq(0, 1, length = 11))
+
+#Bottom_ERBB2 <- which(as.numeric(CPTAC_S039_tumour[CPTAC_S039_tumour$Gene == "ERBB2",
+#                                   2:(ncol(CPTAC_S039_tumour)-1)]) < as.numeric(quartile_ERBB2[4])
+#                      )
+#Bottom_ESR1 <- which(as.numeric(CPTAC_S039_tumour[CPTAC_S039_tumour$Gene == "ESR1",
+#                                   2:(ncol(CPTAC_S039_tumour)-1)]) < as.numeric(quartile_ESR1[4])
+#                     )
+
+#Top_ERBB2 <- which(as.numeric(CPTAC_S039_tumour[CPTAC_S039_tumour$Gene == "ERBB2",
+#                                   2:(ncol(CPTAC_S039_tumour)-1)]) > as.numeric(quartile_ERBB2[7])
+#                       )
+#Top_ESR1 <- which(as.numeric(CPTAC_S039_tumour[CPTAC_S039_tumour$Gene == "ESR1",
+#                                   2:(ncol(CPTAC_S039_tumour)-1)]) > as.numeric(quartile_ESR1[7])
+#                    )
+
+
+#TN_enriched <- intersect(Bottom_ERBB2, Bottom_ESR1) +1 
+#non_TN <- intersect(Top_ERBB2, Top_ESR1) +1 
+
+for (i in c(2,3,4,6)){
+    
+    hist_healthy <- as.numeric(CPTAC_S039_healthy[i,-1]) %>% 
+        hist(main = Genes_of_interest[i])
+    hist_tumour_TN <- as.numeric(CPTAC_S039_TN[i,-1]) %>% 
+        hist(main = Genes_of_interest[i])
+    hist_tumour_nonTN <- as.numeric(CPTAC_S039_TP[i,-1]) %>% 
+        hist(main = Genes_of_interest[i])
+    
+    jpeg(file=paste0("./../Project_Output/",Genes_of_interest[i],".jpeg"))
+    
+    plot(hist_healthy, col = blue, xlim = xlim_bounds, ylim = ylim_bounds, main = paste(Genes_of_interest[i], "blue          = Adja, pink = nonTNBC, green = TNBC", sep = " "))
+    plot(hist_tumour_nonTN, add = TRUE, col = pink)
+    plot(hist_tumour_TN, add = TRUE, col = green)
+    
+    dev.off()
+}
+
+#LOXL2-BRD4 Correlations for each of the 3 types -Adjacent, TN, non TN
+
+LOXL <- which(CPTAC_S039_tumour$Gene == "LOXL2")
+BRD4 <- which(CPTAC_S039_tumour$Gene == "BRD4")
+
+TN_corr <- cor.test(as.numeric(CPTAC_S039_TN[LOXL,-1]), 
+                    as.numeric(CPTAC_S039_TN[BRD4,-1]), method="pearson")
+
+nonTN_corr <- cor.test(as.numeric(CPTAC_S039_TP[LOXL,-1]), 
+                    as.numeric(CPTAC_S039_TP[BRD4,-1]), method="pearson")
+
+Ajd_corr <- cor.test(as.numeric(CPTAC_S039_healthy[LOXL,-1]), 
+                    as.numeric(CPTAC_S039_healthy[BRD4,-1]), method="pearson")
+
+
+ggscatter(data.frame(LOXL_2_TN = as.numeric(CPTAC_S039_TN[LOXL,-1]), 
+                    BRD4_TN = as.numeric(CPTAC_S039_TN[BRD4,-1])), x = "LOXL_2_TN", y = "BRD4_TN", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "spearman",
+          xlab = "LOXL2 MS Log Ratio", ylab = "BRD4 MS log Ratio", title = "Proteomic_LOX2_BRD4_TN")
+ggsave(file=paste0("./../Project_Output/Correlation TN.jpeg"))
+
+
+ggscatter(data.frame(LOXL_2_nonTN = as.numeric(CPTAC_S039_TP[LOXL,-1]), 
+                    BRD4_nonTN = as.numeric(CPTAC_S039_TP[BRD4,-1])), x = "LOXL_2_nonTN", y = "BRD4_nonTN", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "pearson",
+          xlab = "LOXL2 MS Log Ratio", ylab = "BRD4 MS log Ratio",title = "Proteomic_LOX2_BRD4_nonTN")
+ggsave(file=paste0("./../Project_Output/Correlation nonTN.jpeg"))
+
+ggscatter( data.frame (LOXL_2_ = as.numeric(CPTAC_S039_healthy[LOXL , -1]), 
+                    BRD4_ = as.numeric(CPTAC_S039_healthy[BRD4, -1])), x = "LOXL_2_", y = "BRD4_", 
+          add = "reg.line", conf.int = TRUE, 
+          cor.coef = TRUE, cor.method = "spearman",
+          xlab = "LOXL2 MS Log Ratio", ylab = "BRD4 MS log Ratio",title = "Proteomic_LOX2_BRD4_Adjacent")
+
+ggsave(file=paste0("./../Project_Output/Correlation Adjacent tissue.jpeg"))
+
+
+```
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
